@@ -9,7 +9,7 @@ A sketch to read a thermometer and humidity sensor value from Homebridge instanc
 ## How to get the device IDs
 Pleae note I'm using the default Docker-based Homebridge config (default port, HTTP).
 
-### Log in
+### Log in
 curl -X POST "http://<homebridge address>:8581/api/auth/login"   -H "Content-Type: application/json"   -d '{"username":"<admin username>","password":"<admin password>"}'
 
 ### Use the bearer JWT to list all devices
