@@ -10,9 +10,9 @@ A sketch to read a thermometer and humidity sensor value from Homebridge instanc
 Pleae note I'm using the default Docker-based Homebridge config (default port, HTTP).
 
 ### Log in
-curl -X POST "http://<homebridge address>:8581/api/auth/login"   -H "Content-Type: application/json"   -d '{"username":"<admin username>","password":"<admin password>"}'
+curl -X POST "http://homebridge-address-here:8581/api/auth/login"   -H "Content-Type: application/json"   -d '{"username":"admin-username-here","password":"admin-password-here"}'
 
 ### Use the bearer JWT to list all devices
-curl -X GET "http://<homebridge address>:8581/api/accessories"   -H "Authorization: Bearer <token>"
+curl -X GET "http://homebridge-address-here:8581/api/accessories"   -H "Authorization: Bearer your-JWT-here"
 
 The output might be rather large, so either use your favorite text editor search or a LLM to determine what accessory ID (uniqueId) to use.
