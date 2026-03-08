@@ -16,3 +16,5 @@ curl -X POST "http://homebridge-address-here:8581/api/auth/login"   -H "Content-
 curl -X GET "http://homebridge-address-here:8581/api/accessories"   -H "Authorization: Bearer your-JWT-here"
 
 The output might be rather large, so either use your favorite text editor search or a LLM to determine what accessory ID (uniqueId) to use.
+
+![Demo using a WEMOS D1 mini clone](https://github.com/user-attachments/assets/148d8df8-2cf7-4887-b2ee-0609d08f6e73)
