@@ -31,11 +31,11 @@ const int chartTop = 0;
 const int chartBottom = 53;
 const int chartHeight = chartBottom - chartTop + 1;
 
-const int lineRightX = SCREEN_WIDTH - 4;   // historical line ends here
-const int liveMarkerX = SCREEN_WIDTH - 2;  // 2px-wide blinking marker
+const int lineRightX = SCREEN_WIDTH - 4;
+const int liveMarkerX = SCREEN_WIDTH - 2;
 
 // --- History ---
-const int MAX_HISTORY_POINTS = 120; // 24 h / 12 min = 120 samples
+const int MAX_HISTORY_POINTS = 120;
 const float MIN_VISIBLE_RANGE = 0.2f;
 
 // --- Global state ---
@@ -44,6 +44,7 @@ String authToken = "";
 unsigned long lastApiUpdate = 0;
 unsigned long lastDisplayToggle = 0;
 unsigned long bucketStartMillis = 0;
+unsigned long lastStatusLog = 0;
 
 float currentOutdoorTemp = NAN;
 
@@ -64,6 +65,31 @@ float renderValues[MAX_HISTORY_POINTS];
 int renderCount = 0;
 
 // -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+void showMessage(const String& line1, const String& line2 = "") {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 18);
+  display.println(line1);
+  if (line2.length() > 0) {
+    display.setCursor(0, 32);
+    display.println(line2);
+  }
+  display.display();
+}
+
+void logWiFiStatus() {
+  Serial.printf("[WiFi] status=%d, connected=%s, localIP=%s, RSSI=%d\n",
+                WiFi.status(),
+                WiFi.status() == WL_CONNECTED ? "yes" : "no",
+                WiFi.localIP().toString().c_str(),
+                WiFi.RSSI());
+}
+
+// -----------------------------------------------------------------------------
 // API
 // -----------------------------------------------------------------------------
 
@@ -72,19 +98,46 @@ String getAuthToken() {
   HTTPClient http;
   String url = hb_host + "/api/auth/login";
 
-  http.begin(client, url);
-  http.addHeader("Content-Type", "application/json");
+  Serial.println();
+  Serial.println("[AUTH] Starting login...");
+  Serial.printf("[AUTH] URL: %s\n", url.c_str());
 
+  http.setTimeout(8000);
+  if (!http.begin(client, url)) {
+    Serial.println("[AUTH] http.begin() failed");
+    return "";
+  }
+
+  http.addHeader("Content-Type", "application/json");
   String payload = "{\"username\":\"" + hb_username + "\",\"password\":\"" + hb_password + "\"}";
+  Serial.printf("[AUTH] Payload: %s\n", payload.c_str());
+
   int httpCode = http.POST(payload);
+  Serial.printf("[AUTH] HTTP code: %d\n", httpCode);
+
+  if (httpCode <= 0) {
+    Serial.printf("[AUTH] Transport error: %s\n", http.errorToString(httpCode).c_str());
+    http.end();
+    return "";
+  }
+
+  String response = http.getString();
+  Serial.printf("[AUTH] Response body: %s\n", response.c_str());
 
   String token = "";
   if (httpCode == 200 || httpCode == 201) {
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, http.getString());
-    if (!error) {
+    StaticJsonDocument<768> doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (error) {
+      Serial.printf("[AUTH] JSON parse failed: %s\n", error.c_str());
+    } else if (doc.containsKey("access_token")) {
       token = doc["access_token"].as<String>();
+      Serial.printf("[AUTH] Token received, length=%u\n", token.length());
+    } else {
+      Serial.println("[AUTH] access_token not found in response");
     }
+  } else {
+    Serial.printf("[AUTH] Unexpected HTTP status: %d\n", httpCode);
   }
 
   http.end();
@@ -93,25 +146,59 @@ String getAuthToken() {
 
 float getTemperature(const String& uniqueId) {
   float temp = NAN;
-  if (authToken == "") return temp;
+
+  if (authToken == "") {
+    Serial.println("[TEMP] No auth token, skipping temperature fetch");
+    return temp;
+  }
 
   WiFiClient client;
   HTTPClient http;
   String url = hb_host + "/api/accessories/" + uniqueId;
 
-  http.begin(client, url);
+  Serial.println();
+  Serial.println("[TEMP] Fetching temperature...");
+  Serial.printf("[TEMP] URL: %s\n", url.c_str());
+
+  http.setTimeout(8000);
+  if (!http.begin(client, url)) {
+    Serial.println("[TEMP] http.begin() failed");
+    return temp;
+  }
+
   http.addHeader("Authorization", "Bearer " + authToken);
 
   int httpCode = http.GET();
+  Serial.printf("[TEMP] HTTP code: %d\n", httpCode);
+
+  if (httpCode <= 0) {
+    Serial.printf("[TEMP] Transport error: %s\n", http.errorToString(httpCode).c_str());
+    http.end();
+    return temp;
+  }
+
+  String response = http.getString();
 
   if (httpCode == 200) {
-    StaticJsonDocument<1024> doc;
-    DeserializationError error = deserializeJson(doc, http.getString());
-    if (!error && doc["values"].containsKey("CurrentTemperature")) {
+    StaticJsonDocument<1536> doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (error) {
+      Serial.printf("[TEMP] JSON parse failed: %s\n", error.c_str());
+      Serial.printf("[TEMP] Response body: %s\n", response.c_str());
+    } else if (doc["values"].containsKey("CurrentTemperature")) {
       temp = doc["values"]["CurrentTemperature"].as<float>();
+      Serial.printf("[TEMP] CurrentTemperature = %.2f\n", temp);
+    } else {
+      Serial.println("[TEMP] CurrentTemperature not found in response");
+      Serial.printf("[TEMP] Response body: %s\n", response.c_str());
     }
   } else if (httpCode == 401) {
+    Serial.println("[TEMP] Unauthorized, clearing token");
     authToken = "";
+    Serial.printf("[TEMP] Response body: %s\n", response.c_str());
+  } else {
+    Serial.printf("[TEMP] Unexpected HTTP status: %d\n", httpCode);
+    Serial.printf("[TEMP] Response body: %s\n", response.c_str());
   }
 
   http.end();
@@ -129,6 +216,9 @@ void addHistoryPoint(float value) {
   if (historyCount < MAX_HISTORY_POINTS) {
     historyCount++;
   }
+
+  Serial.printf("[HIST] Stored average %.2f at slot=%d, historyCount=%d\n",
+                value, historyHead == 0 ? MAX_HISTORY_POINTS - 1 : historyHead - 1, historyCount);
 }
 
 float getHistoryValue(int logicalIndex) {
@@ -166,7 +256,6 @@ int getTextWidth(const String& text, int size = 1) {
 
 void buildRenderValues() {
   renderCount = 0;
-
   for (int i = 0; i < historyCount; i++) {
     renderValues[renderCount++] = getHistoryValue(i);
   }
@@ -249,6 +338,10 @@ void drawPixelClipped(int x, int y) {
   display.drawPixel(x, y, WHITE);
 }
 
+void drawLineClippedVertical(int x0, int y0, int x1, int y1, int yOffset) {
+  display.drawLine(x0, y0 + yOffset, x1, y1 + yOffset, WHITE);
+}
+
 void drawThickPixel(int x, int y) {
   drawPixelClipped(x, y);
   drawPixelClipped(x, y - 1);
@@ -261,12 +354,12 @@ void drawBlinkMarker(int x, int y) {
 }
 
 void drawThickLine(int x0, int y0, int x1, int y1) {
-  // Draw 3 parallel lines, clipped per pixel via canvas-safe y range from mapTempToY.
-  display.drawLine(x0, y0, x1, y1, WHITE);
-  display.drawLine(x0, y0 - 1, x1, y1 - 1, WHITE);
-  display.drawLine(x0, y0 + 1, x1, y1 + 1, WHITE);
+  // Because mapped y values are already constrained to chart region,
+  // these 3 lines stay visually in-bounds for this layout.
+  drawLineClippedVertical(x0, y0, x1, y1, 0);
+  drawLineClippedVertical(x0, y0, x1, y1, -1);
+  drawLineClippedVertical(x0, y0, x1, y1, 1);
 
-  // Ensure edges stay visually reinforced even if line rasterization misses them
   drawThickPixel(x0, y0);
   drawThickPixel(x1, y1);
 }
@@ -280,7 +373,7 @@ void updateTempScreen(float value) {
 
   display.setTextSize(2);
   display.setCursor(0, 0);
-  display.print("Outdoor ");
+  display.print("Balkon ");
   display.cp437(true);
   display.write(167);
   display.print("C");
@@ -320,11 +413,9 @@ void updateChartScreen(unsigned long nowMillis) {
       int x1;
 
       if (historyCount < MAX_HISTORY_POINTS) {
-        // stretch available finished history across width
         x0 = ((long)i * lineRightX) / (renderCount - 1);
         x1 = ((long)(i + 1) * lineRightX) / (renderCount - 1);
       } else {
-        // full 24h history at fixed spacing
         x0 = ((long)i * lineRightX) / (MAX_HISTORY_POINTS - 1);
         x1 = ((long)(i + 1) * lineRightX) / (MAX_HISTORY_POINTS - 1);
       }
@@ -335,7 +426,7 @@ void updateChartScreen(unsigned long nowMillis) {
       drawThickLine(x0, y0, x1, y1);
     }
   } else if (!isnan(currentOutdoorTemp)) {
-    // No finished history yet: show a baseline at current temperature
+    // No finished history yet: baseline at current temperature
     int y = mapTempToY(currentOutdoorTemp, displayMin, displayMax);
     drawThickLine(0, y, lineRightX, y);
   }
@@ -349,7 +440,7 @@ void updateChartScreen(unsigned long nowMillis) {
     }
   }
 
-  // Bottom line: truthful min/max, aligned left/right
+  // Bottom line: truthful min/max
   display.setTextSize(1);
 
   String minStr = "Min:" + String(realMin, 1);
@@ -382,6 +473,7 @@ void resetBucket(unsigned long nowMillis) {
   bucketStartMillis = nowMillis;
   bucketSum = 0.0f;
   bucketSamples = 0;
+  Serial.printf("[BUCKET] Reset at millis=%lu\n", nowMillis);
 }
 
 void addToBucket(float temp, unsigned long nowMillis) {
@@ -393,6 +485,7 @@ void addToBucket(float temp, unsigned long nowMillis) {
 
   bucketSum += temp;
   bucketSamples++;
+  Serial.printf("[BUCKET] Added sample %.2f, count=%d, sum=%.2f\n", temp, bucketSamples, bucketSum);
 }
 
 void finalizeBucketIfNeeded(unsigned long nowMillis) {
@@ -401,7 +494,10 @@ void finalizeBucketIfNeeded(unsigned long nowMillis) {
 
   if (bucketSamples > 0) {
     float avg = bucketSum / (float)bucketSamples;
+    Serial.printf("[BUCKET] Finalizing bucket: avg=%.2f from %d samples\n", avg, bucketSamples);
     addHistoryPoint(avg);
+  } else {
+    Serial.println("[BUCKET] Finalize called with 0 samples");
   }
 
   resetBucket(nowMillis);
@@ -413,9 +509,13 @@ void finalizeBucketIfNeeded(unsigned long nowMillis) {
 
 void setup() {
   Serial.begin(115200);
+  delay(100);
+
+  Serial.println();
+  Serial.println("=== Boot ===");
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 allocation failed"));
+    Serial.println("[OLED] SSD1306 allocation failed");
     for (;;) {}
   }
 
@@ -426,39 +526,59 @@ void setup() {
   display.println("Connecting WiFi...");
   display.display();
 
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+
+  Serial.printf("[WiFi] Connecting to SSID: %s\n", ssid);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
+  Serial.println();
+  Serial.println("[WiFi] Connected.");
+  logWiFiStatus();
 
-  Serial.println("\nWiFi connected.");
   refreshDisplay(millis());
 }
 
 void loop() {
+  unsigned long currentMillis = millis();
+
   if (WiFi.status() != WL_CONNECTED) {
+    if (currentMillis - lastStatusLog >= 5000UL) {
+      lastStatusLog = currentMillis;
+      Serial.println("[WiFi] Not connected, retrying...");
+      logWiFiStatus();
+      showMessage("WiFi disconnected");
+    }
     return;
   }
-
-  unsigned long currentMillis = millis();
 
   if (currentMillis - lastApiUpdate >= apiInterval || lastApiUpdate == 0) {
     lastApiUpdate = currentMillis;
 
     if (authToken == "") {
-      display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(0, 20);
-      display.print("Logging in...");
-      display.display();
+      showMessage("Logging in...");
       authToken = getAuthToken();
+
+      if (authToken == "") {
+        Serial.println("[AUTH] Login failed, no token");
+        showMessage("Login failed", "See serial log");
+      } else {
+        Serial.println("[AUTH] Login successful");
+      }
     }
 
     if (authToken != "") {
-      currentOutdoorTemp = getTemperature(id_outdoor);
-      addToBucket(currentOutdoorTemp, currentMillis);
-      refreshDisplay(currentMillis);
+      float temp = getTemperature(id_outdoor);
+      if (!isnan(temp)) {
+        currentOutdoorTemp = temp;
+        addToBucket(currentOutdoorTemp, currentMillis);
+        refreshDisplay(currentMillis);
+      } else {
+        Serial.println("[TEMP] Temperature fetch failed");
+        showMessage("Fetch failed", "See serial log");
+      }
     }
   }
 
@@ -470,7 +590,6 @@ void loop() {
     refreshDisplay(currentMillis);
   }
 
-  // Refresh chart often enough so blinking is visible
   if (displayState == 1 && authToken != "") {
     static unsigned long lastBlinkRefresh = 0;
     if (currentMillis - lastBlinkRefresh >= 150) {
