@@ -1,7 +1,7 @@
 # esp8266-homebridge-reader
 A sketch to read a thermometer sensor value from Homebridge instance and display it on a SSD1306-based OLED display. 
 
-# What it does
+## What it does
 This sketch automatically toggles two screens in a 5 sec interval (``displayInterval``):
 1. A large, easily readable thermometer value (in °C) along with the sensor name refreshed every 15 seconds.
 2. The last 24 hours chart along with min/max values. It tries to be a bit clever, so it keeps the values in 120 buckets (12 minutes average each) instead of keeping minute data for the whole day. Also, the algorithm starts to render the chart immediately (as a line when plugged initially in) displaying the values that have been collected once the device has booted, until the whole daily buffer is filled. The last value collected (the live temperature) is blinking in the rightmost part of the chart.
@@ -9,7 +9,11 @@ This sketch automatically toggles two screens in a 5 sec interval (``displayInte
 ## How to use
 - Set the ``ssid`` and ``password`` values to connect to your WiFi
 - Set the ``hb_host``, ``hb_username`` and ``hb_password`` for your Homebridge instance. Note the Bojnour domain name resolution might be sketchy on ESP, so if that does not work reliabily for you, try the HB IP address instead.
-- Use curl (see below) to determine the ``uniqueId``s for the sensors you'd like to read. In this sketch, I read one Jablotron temperature sensor and a Tado thermostatic valve combined temperature + humidity sensor value.
+- Use curl (see below) to determine the ``uniqueId``s for the sensors you'd like to read. In this sketch, I read one Jablotron temperature sensor value.
+
+### DNS resolution notice
+If you use Bonjour/mDNS for your Homebridge server (e.g. ``homebridge.local``), it may not work reliabily -- it is a known issue on an ESP8266. This means the device might not be able to resolve a Bonjour DNS address.
+To mitigate this, either switch to a classic DNS (e.g. ``homebridge`` or ``homebridge.lan``), if you're running a DNS server in your network or use a plain IP address to connect.
 
 ## How to get the device IDs
 Pleae note I'm using the default Docker-based Homebridge config - default port, HTTP.
